@@ -1,0 +1,31 @@
+{
+  "name": "akar-music-platform",
+  "version": "1.0.0",
+  "description": "Akar - Sosyal Müzik ve Canlı Sohbet Platformu",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "music",
+    "streaming",
+    "socket.io",
+    "express",
+    "tailwind",
+    "render",
+    "railway"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@distube/ytdl-core": "^5.2.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
+    "socket.io": "^4.8.1",
+    "yt-search": "^2.12.1"
+  }
+}
