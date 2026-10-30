@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { Ytdl, chooseFormat } from '@distube/ytdl-core';
 import ytSearch from 'yt-search';
 
-// GitHub update kontrol zaman aşımını önle
+// GitHub update kontrol gecikmesini devre dışı bırak
 process.env.YTDL_NO_UPDATE = '1';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,7 +16,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 
-// Bulut barındırma (Render / Railway) ve Netlify istemcisi için tam CORS desteği
+// Bulut barındırma (Render / Railway) ve harici istemciler için tam CORS yapılandırması
 const corsOptions = {
     origin: '*',
     methods: ['GET', 'POST', 'OPTIONS'],
@@ -27,21 +27,56 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// Statik Dosyaları Sun (Hem Render/Railway'de tek parça çalışabilsin hem yerelde)
+// Statik Dosyaları Sun
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(__dirname));
 
-// Socket.io Kurulumu
+// Socket.io Gerçek Zamanlı Motoru
 const io = new Server(server, {
-    cors: {
-        origin: '*',
-        methods: ['GET', 'POST']
-    }
+    cors: { origin: '*', methods: ['GET', 'POST'] }
 });
 
-// Dinamik Port (Render / Railway otomatik PORT çevresel değişkeni sağlar)
 const PORT = process.env.PORT || 3000;
 const ytdl = new Ytdl();
+
+// =========================================================================
+// HIZ VE PERFORMANS ÖNBELLEK (CACHE) MEKANİZMASI
+// =========================================================================
+const searchCache = new Map();
+const SEARCH_CACHE_TTL = 10 * 60 * 1000; // 10 Dakika
+
+function getCachedSearch(key) {
+    const entry = searchCache.get(key.toLowerCase().trim());
+    if (entry && (Date.now() - entry.time < SEARCH_CACHE_TTL)) {
+        return entry.data;
+    }
+    return null;
+}
+
+function setCachedSearch(key, data) {
+    if (searchCache.size > 300) {
+        // En eski anahtarı sil
+        searchCache.delete(searchCache.keys().next().value);
+    }
+    searchCache.set(key.toLowerCase().trim(), { data, time: Date.now() });
+}
+
+// Şarkı Video Detayları Önbelleği (Time-to-First-Byte'ı sıfıra indirmek için)
+const infoCache = new Map();
+const INFO_CACHE_TTL = 20 * 60 * 1000; // 20 Dakika
+
+async function getCachedInfo(targetUrl) {
+    const cached = infoCache.get(targetUrl);
+    if (cached && (Date.now() - cached.time < INFO_CACHE_TTL)) {
+        return cached.info;
+    }
+    const info = await ytdl.getInfo(targetUrl);
+    if (infoCache.size > 200) {
+        infoCache.delete(infoCache.keys().next().value);
+    }
+    infoCache.set(targetUrl, { info, time: Date.now() });
+    return info;
+}
 
 // Yardımcı Fonksiyonlar
 function formatViews(views) {
@@ -62,36 +97,50 @@ function resolveYouTubeUrl(input) {
 
 function sanitizeFilename(title) {
     if (!title) return 'muzik';
-    return title.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'muzik';
+    return title.replace(/[/\\?%*:|"<>]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'muzik';
 }
 
-// Varsayılan Güvenli Trend Verisi
+// Hazır Trend Önbelleği
 const initialTrending = [
-    { id: "_G0ZDXq7T-I", url: "https://www.youtube.com/watch?v=_G0ZDXq7T-I", title: "Tarkan - Yolla", duration: "4:46", seconds: 286, views: "138M izlenme", ago: "Trend", thumbnail: "https://i.ytimg.com/vi/_G0ZDXq7T-I/hqdefault.jpg", author: { name: "Tarkan", url: "" } },
-    { id: "c9r1vfb51X8", url: "https://www.youtube.com/watch?v=c9r1vfb51X8", title: "Tarkan - Şımarık (Kiss Kiss)", duration: "3:11", seconds: 191, views: "45M izlenme", ago: "Klasik", thumbnail: "https://i.ytimg.com/vi/c9r1vfb51X8/hqdefault.jpg", author: { name: "Tarkan", url: "" } },
-    { id: "NAHRPeqGcL4", url: "https://www.youtube.com/watch?v=NAHRPeqGcL4", title: "Tarkan - Kuzu Kuzu", duration: "4:02", seconds: 242, views: "168M izlenme", ago: "Trend", thumbnail: "https://i.ytimg.com/vi/NAHRPeqGcL4/hqdefault.jpg", author: { name: "Tarkan", url: "" } },
-    { id: "kJQP7kiw5Fk", url: "https://www.youtube.com/watch?v=kJQP7kiw5Fk", title: "Luis Fonsi - Despacito ft. Daddy Yankee", duration: "4:41", seconds: 281, views: "8.4B izlenme", ago: "Global Hit", thumbnail: "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg", author: { name: "Luis Fonsi", url: "" } },
-    { id: "fJ9rUzIMcZQ", url: "https://www.youtube.com/watch?v=fJ9rUzIMcZQ", title: "Queen - Bohemian Rhapsody", duration: "5:59", seconds: 359, views: "1.7B izlenme", ago: "Efsane", thumbnail: "https://i.ytimg.com/vi/fJ9rUzIMcZQ/hqdefault.jpg", author: { name: "Queen Official", url: "" } },
-    { id: "JGwWNGJdvx8", url: "https://www.youtube.com/watch?v=JGwWNGJdvx8", title: "Ed Sheeran - Shape of You", duration: "4:23", seconds: 263, views: "6.2B izlenme", ago: "Popüler", thumbnail: "https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg", author: { name: "Ed Sheeran", url: "" } }
+    { id: "_G0ZDXq7T-I", url: "https://www.youtube.com/watch?v=_G0ZDXq7T-I", title: "Tarkan - Yolla", duration: "4:46", seconds: 286, views: "138M izlenme", ago: "Trend", thumbnail: "https://i.ytimg.com/vi/_G0ZDXq7T-I/mqdefault.jpg", author: { name: "Tarkan" } },
+    { id: "c9r1vfb51X8", url: "https://www.youtube.com/watch?v=c9r1vfb51X8", title: "Tarkan - Şımarık (Kiss Kiss)", duration: "3:11", seconds: 191, views: "45M izlenme", ago: "Klasik", thumbnail: "https://i.ytimg.com/vi/c9r1vfb51X8/mqdefault.jpg", author: { name: "Tarkan" } },
+    { id: "NAHRPeqGcL4", url: "https://www.youtube.com/watch?v=NAHRPeqGcL4", title: "Tarkan - Kuzu Kuzu", duration: "4:02", seconds: 242, views: "168M izlenme", ago: "Trend", thumbnail: "https://i.ytimg.com/vi/NAHRPeqGcL4/mqdefault.jpg", author: { name: "Tarkan" } },
+    { id: "kJQP7kiw5Fk", url: "https://www.youtube.com/watch?v=kJQP7kiw5Fk", title: "Luis Fonsi - Despacito ft. Daddy Yankee", duration: "4:41", seconds: 281, views: "8.4B izlenme", ago: "Hit", thumbnail: "https://i.ytimg.com/vi/kJQP7kiw5Fk/mqdefault.jpg", author: { name: "Luis Fonsi" } },
+    { id: "fJ9rUzIMcZQ", url: "https://www.youtube.com/watch?v=fJ9rUzIMcZQ", title: "Queen - Bohemian Rhapsody", duration: "5:59", seconds: 359, views: "1.7B izlenme", ago: "Efsane", thumbnail: "https://i.ytimg.com/vi/fJ9rUzIMcZQ/mqdefault.jpg", author: { name: "Queen Official" } },
+    { id: "JGwWNGJdvx8", url: "https://www.youtube.com/watch?v=JGwWNGJdvx8", title: "Ed Sheeran - Shape of You", duration: "4:23", seconds: 263, views: "6.2B izlenme", ago: "Popüler", thumbnail: "https://i.ytimg.com/vi/JGwWNGJdvx8/mqdefault.jpg", author: { name: "Ed Sheeran" } },
+    { id: "4NRXx6U8ABQ", url: "https://www.youtube.com/watch?v=4NRXx6U8ABQ", title: "The Weeknd - Blinding Lights", duration: "4:20", seconds: 260, views: "850M izlenme", ago: "Hit", thumbnail: "https://i.ytimg.com/vi/4NRXx6U8ABQ/mqdefault.jpg", author: { name: "The Weeknd" } },
+    { id: "hT_nvWreIhg", url: "https://www.youtube.com/watch?v=hT_nvWreIhg", title: "OneRepublic - Counting Stars", duration: "4:43", seconds: 283, views: "4.0B izlenme", ago: "Hit", thumbnail: "https://i.ytimg.com/vi/hT_nvWreIhg/mqdefault.jpg", author: { name: "OneRepublic" } }
 ];
 
 let trendingCache = { data: initialTrending, timestamp: Date.now() };
 
 // =========================================================================
-// API ROTALARI
+// 1. /api/search - Optimize Edilmiş Hızlı Arama Rotası
 // =========================================================================
-
-// 1. /api/search - Arama Rotası
 app.get('/api/search', async (req, res) => {
     try {
         const query = req.query.q;
         if (!query || typeof query !== 'string' || !query.trim()) {
-            return res.status(400).json({ success: false, error: 'Arama terimi girilmedi.' });
+            return res.status(400).json({ success: false, error: 'Arama terimi giriniz.' });
         }
 
-        console.log(`[AKAR ARAMA]: "${query.trim()}"`);
-        const searchResults = await ytSearch(query.trim());
-        const videos = (searchResults.videos || []).slice(0, 30).map(v => ({
+        const trimmedQuery = query.trim();
+
+        // 1. Önce Hızlı Önbelleği Kontrol Et (0 ms Dönüş)
+        const cachedResults = getCachedSearch(trimmedQuery);
+        if (cachedResults) {
+            return res.json({
+                success: true,
+                fromCache: true,
+                query: trimmedQuery,
+                count: cachedResults.length,
+                results: cachedResults
+            });
+        }
+
+        // 2. Önbellekte yoksa YouTube'da ara (İlk 8-10 sonuç ile sınırlandırılmış)
+        const searchResults = await ytSearch(trimmedQuery);
+        const videos = (searchResults.videos || []).slice(0, 10).map(v => ({
             id: v.videoId,
             url: v.url,
             title: v.title,
@@ -99,13 +148,18 @@ app.get('/api/search', async (req, res) => {
             seconds: v.seconds || 0,
             views: formatViews(v.views),
             ago: v.ago || 'Son zamanlarda',
-            thumbnail: v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-            author: { name: v.author ? v.author.name : 'Sanatçı', url: v.author ? v.author.url : '' }
+            // Veri transferini ve yüklenmeyi hızlandırmak için hafif 'mqdefault.jpg' görseli
+            thumbnail: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`,
+            author: { name: v.author ? v.author.name : 'Sanatçı' }
         }));
+
+        // Önbelleğe al
+        setCachedSearch(trimmedQuery, videos);
 
         res.json({
             success: true,
-            query: query.trim(),
+            fromCache: false,
+            query: trimmedQuery,
             count: videos.length,
             results: videos
         });
@@ -115,15 +169,17 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// 2. /api/trending - Popüler / Trend Müzikler
+// =========================================================================
+// 2. /api/trending - Optimize Edilmiş Trend Müzikler
+// =========================================================================
 app.get('/api/trending', async (req, res) => {
     try {
         const now = Date.now();
-        if (now - trendingCache.timestamp > 10 * 60 * 1000 || !trendingCache.data.length) {
+        if (now - trendingCache.timestamp > 15 * 60 * 1000 || !trendingCache.data.length) {
             ytSearch('en popüler şarkılar trend müzik 2024')
                 .then(searchResults => {
                     if (searchResults && searchResults.videos && searchResults.videos.length > 0) {
-                        trendingCache.data = searchResults.videos.slice(0, 30).map(v => ({
+                        trendingCache.data = searchResults.videos.slice(0, 12).map(v => ({
                             id: v.videoId,
                             url: v.url,
                             title: v.title,
@@ -131,8 +187,8 @@ app.get('/api/trending', async (req, res) => {
                             seconds: v.seconds || 0,
                             views: formatViews(v.views),
                             ago: v.ago || 'Trend',
-                            thumbnail: v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-                            author: { name: v.author ? v.author.name : 'Popüler Sanatçı', url: v.author ? v.author.url : '' }
+                            thumbnail: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`,
+                            author: { name: v.author ? v.author.name : 'Popüler Sanatçı' }
                         }));
                         trendingCache.timestamp = Date.now();
                     }
@@ -149,24 +205,43 @@ app.get('/api/trending', async (req, res) => {
     }
 });
 
-// 3. /api/stream - Ses Akışı (HTTP 206 Range Desteği)
+// =========================================================================
+// 3. /api/stream - Gecikmesiz Time-To-First-Byte Ses Akışı (lowestaudio)
+// =========================================================================
 app.get('/api/stream', async (req, res) => {
     try {
         const targetUrl = resolveYouTubeUrl(req.query.url || req.query.id);
         if (!targetUrl) return res.status(400).json({ error: 'Geçersiz YouTube URL veya Video ID.' });
 
-        const info = await ytdl.getInfo(targetUrl);
+        // Önbellekli Video Bilgisi Alma
+        const info = await getCachedInfo(targetUrl);
+        
+        // Hızlı arabelleğe alma ve anında başlatma için optimize format seçimi
         let format;
         try {
-            format = chooseFormat(info.formats, { filter: { hasAudio: true, hasVideo: false }, quality: 'highestaudio' });
+            format = chooseFormat(info.formats, {
+                filter: { hasAudio: true, hasVideo: false },
+                quality: 'lowestaudio'
+            });
         } catch {
-            format = chooseFormat(info.formats, { filter: f => f.hasAudio, quality: 'highestaudio' });
+            format = chooseFormat(info.formats, {
+                filter: f => f.hasAudio,
+                quality: 'lowestaudio'
+            });
         }
 
         if (!format) return res.status(404).json({ error: 'Ses formatı bulunamadı.' });
 
         const mimeType = format.mimeType ? format.mimeType.split(';')[0] : 'audio/mp4';
         const rangeHeader = req.headers.range;
+
+        // Anında ilk baytın tarayıcıya gitmesi için küçük buffer (64KB)
+        const streamOptions = {
+            filter: { hasAudio: true, hasVideo: false },
+            quality: 'lowestaudio',
+            highWaterMark: 1 << 16, // 64KB (anında çalmaya başlar)
+            dlChunkSize: 0
+        };
 
         if (rangeHeader && format.contentLength) {
             const totalSize = parseInt(format.contentLength, 10);
@@ -182,11 +257,7 @@ app.get('/api/stream', async (req, res) => {
                 'Cache-Control': 'no-cache'
             });
 
-            const stream = ytdl.download(targetUrl, {
-                filter: { hasAudio: true, hasVideo: false },
-                quality: 'highestaudio',
-                range: { start, end }
-            });
+            const stream = ytdl.download(targetUrl, { ...streamOptions, range: { start, end } });
             stream.pipe(res);
             res.on('close', () => stream.destroy());
             stream.on('error', () => { if (!res.headersSent) res.status(500).end(); });
@@ -197,7 +268,8 @@ app.get('/api/stream', async (req, res) => {
                 'Cache-Control': 'no-cache',
                 ...(format.contentLength ? { 'Content-Length': format.contentLength } : {})
             });
-            const stream = ytdl.download(targetUrl, { filter: { hasAudio: true, hasVideo: false }, quality: 'highestaudio' });
+
+            const stream = ytdl.download(targetUrl, streamOptions);
             stream.pipe(res);
             res.on('close', () => stream.destroy());
             stream.on('error', () => { if (!res.headersSent) res.status(500).end(); });
@@ -208,13 +280,15 @@ app.get('/api/stream', async (req, res) => {
     }
 });
 
-// 4. /api/download - MP3 Olarak İndirme
+// =========================================================================
+// 4. /api/download - Yüksek Kaliteli MP3 İndirme
+// =========================================================================
 app.get('/api/download', async (req, res) => {
     try {
         const targetUrl = resolveYouTubeUrl(req.query.url || req.query.id);
         if (!targetUrl) return res.status(400).json({ error: 'Geçersiz YouTube URL.' });
 
-        const info = await ytdl.getInfo(targetUrl);
+        const info = await getCachedInfo(targetUrl);
         const format = chooseFormat(info.formats, { filter: { hasAudio: true, hasVideo: false }, quality: 'highestaudio' });
         const cleanTitle = sanitizeFilename(info.videoDetails.title || 'Muzik');
 
@@ -235,9 +309,9 @@ app.get('/api/download', async (req, res) => {
     }
 });
 
-// Sağlık Kontrolü Rotası (Render/Railway sağlık testi için)
+// Sağlık Kontrolü Rotası (Render/Railway İçin)
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', service: 'Akar Music & Social Backend', timestamp: Date.now() });
+    res.json({ status: 'ok', service: 'Akar Fast Audio Engine', uptime: process.uptime() });
 });
 
 // =========================================================================
@@ -251,7 +325,7 @@ function getRoomHistory(roomId) {
             {
                 id: 'sys-1',
                 username: 'Akar Bot',
-                text: 'Akar Sosyal Müzik Sohbetine hoş geldiniz! Şarkılar hakkında konuşun ve müzik zevkinizi paylaşın.',
+                text: 'Akar Canlı Müzik Odasına hoş geldiniz! Şarkılar hakkında konuşun ve müzik zevkinizi paylaşın.',
                 time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 isSystem: true
             }
@@ -275,10 +349,7 @@ io.on('connection', (socket) => {
     let currentRoom = 'global';
     socket.join(currentRoom);
 
-    socket.emit('room:history', {
-        roomId: currentRoom,
-        messages: getRoomHistory(currentRoom)
-    });
+    socket.emit('room:history', { roomId: currentRoom, messages: getRoomHistory(currentRoom) });
 
     socket.on('join:room', ({ roomId, username, roomName }) => {
         if (!roomId) return;
@@ -296,7 +367,7 @@ io.on('connection', (socket) => {
             socket.to(currentRoom).emit('chat:message', {
                 id: Date.now().toString(),
                 username: 'Sistem',
-                text: `${username} sohbete katıldı.`,
+                text: `${username} odaya katıldı.`,
                 time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 isSystem: true
             });
@@ -333,7 +404,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// SPA Yönlendirmesi
 app.get('*', (req, res) => {
     const indexPath = path.join(__dirname, 'public', 'index.html');
     res.sendFile(indexPath, (err) => {
@@ -343,8 +413,8 @@ app.get('*', (req, res) => {
 
 server.listen(PORT, () => {
     console.log(`=======================================================`);
-    console.log(`🎵 Akar - Sosyal Müzik ve Sohbet Platformu Başlatıldı!`);
-    console.log(`🚀 Port: ${PORT}`);
-    console.log(`💬 Socket.io Aktif!`);
+    console.log(`🚀 Akar Optimize Edilmiş Müzik & Sohbet Sunucusu Başlatıldı!`);
+    console.log(`⚡ Port: ${PORT}`);
+    console.log(`💨 Bellek İçi Arama ve Akış Önbelleği Aktif!`);
     console.log(`=======================================================`);
 });
